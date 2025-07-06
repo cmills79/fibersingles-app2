@@ -1,0 +1,12 @@
+{
+  "tasks": {
+    "serve": "deno run --allow-net --allow-env index.ts"
+  },
+  "imports": {
+    "@std/http/server": "https://deno.land/std@0.168.0/http/server.ts"
+  },
+  "compilerOptions": {
+    "allowJs": true,
+    "strict": true
+  }
+}
