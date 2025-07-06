@@ -44,8 +44,10 @@ try {
 # Verify the secrets were set
 Write-Host "`nVerifying secrets have been set..."
 try {
-    $secrets = supabase secrets list
-    if (-not $?) { throw "Failed to list secrets" }
+    $secretsList = supabase secrets list
+    if ($LASTEXITCODE -ne 0) { throw "Failed to list secrets" }
+    Write-Host "Secrets verified successfully:"
+    Write-Host $secretsList
 } catch {
     Write-Error "Failed to verify secrets: $_"
     exit 1
@@ -57,12 +59,12 @@ try {
     # Only initialize if .supabase folder doesn't exist
     if (-not (Test-Path ".supabase")) {
         supabase init
-        if (-not $?) { throw "Failed to initialize Supabase" }
+        if ($LASTEXITCODE -ne 0) { throw "Failed to initialize Supabase" }
     }
 
     Write-Host "Linking Supabase project..."
     supabase link --project-ref fibersingles-app2
-    if (-not $?) { throw "Failed to link project" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to link project" }
 } catch {
     Write-Error "Failed to initialize/link Supabase project: $_"
     exit 1
@@ -72,7 +74,7 @@ try {
 Write-Host "`nDeploying generate-monster-image function..."
 try {
     supabase functions deploy generate-monster-image
-    if (-not $?) { throw "Failed to deploy function" }
+    if ($LASTEXITCODE -ne 0) { throw "Failed to deploy function" }
     Write-Host "Function deployed successfully!"
 } catch {
     Write-Error "Failed to deploy function: $_"

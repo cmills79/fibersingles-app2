@@ -15,9 +15,9 @@ if (!VERTEX_AI_PROJECT_ID || !VERTEX_AI_LOCATION) {
 
 // Configure logging
 const log = {
-  info: (message: string, ...args: any[]) => console.log(`[INFO] ${message}`, ...args),
-  error: (message: string, ...args: any[]) => console.error(`[ERROR] ${message}`, ...args),
-  debug: (message: string, ...args: any[]) => console.log(`[DEBUG] ${message}`, ...args)
+  info: (message: string, ...args: unknown[]) => console.log(`[INFO] ${message}`, ...args),
+  error: (message: string, ...args: unknown[]) => console.error(`[ERROR] ${message}`, ...args),
+  debug: (message: string, ...args: unknown[]) => console.log(`[DEBUG] ${message}`, ...args)
 };
 
 // Valid symptom types
@@ -49,14 +49,15 @@ interface MonsterProfile {
   symptoms?: Symptom[];
   coping?: CopingStrategy[];
   personality?: string[];
-  // Allow 1-5 traits of each type
-  validate(): boolean {
-    return (
-      (!this.symptoms || (this.symptoms.length > 0 && this.symptoms.length <= 5)) &&
-      (!this.coping || (this.coping.length > 0 && this.coping.length <= 5)) &&
-      (!this.personality || (this.personality.length > 0 && this.personality.length <= 5))
-    );
-  }
+}
+
+// Validation function for MonsterProfile
+function _validateMonsterProfile(profile: MonsterProfile): boolean {
+  return (
+    (!profile.symptoms || (profile.symptoms.length > 0 && profile.symptoms.length <= 5)) &&
+    (!profile.coping || (profile.coping.length > 0 && profile.coping.length <= 5)) &&
+    (!profile.personality || (profile.personality.length > 0 && profile.personality.length <= 5))
+  );
 }
 
 interface GenerateImageRequest {
@@ -222,7 +223,7 @@ function generatePrompt(profile: MonsterProfile): string {
   return prompt;
 }
 
-serve(async (req) => {
+serve(async (req: Request) => {
   // Handle CORS
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -243,7 +244,7 @@ serve(async (req) => {
     try {
       requestData = JSON.parse(rawBody);
     } catch (e) {
-      throw new Error(`Invalid JSON in request body: ${e.message}`);
+      throw new Error(`Invalid JSON in request body: ${e instanceof Error ? e.message : String(e)}`);
     }
     
     const { profile, userId } = requestData;
@@ -330,7 +331,7 @@ serve(async (req) => {
 
     // Convert base64 to blob
     const imageData = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0));
-    const imageBlob = new Blob([imageData], { type: 'image/png' });
+    const _imageBlob = new Blob([imageData], { type: 'image/png' });
 
     // Here you would typically:
     // 1. Upload the image to Supabase Storage
@@ -350,16 +351,17 @@ serve(async (req) => {
     );
 
   } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
     log.error('Error in monster generation:', {
-      error: error.message,
-      stack: error.stack,
-      type: error.constructor.name
+      error: err.message,
+      stack: err.stack,
+      type: err.constructor.name
     });
     return new Response(
       JSON.stringify({
         success: false,
-        error: error.message || 'Failed to generate monster image',
-        errorType: error.constructor.name,
+        error: err.message || 'Failed to generate monster image',
+        errorType: err.constructor.name,
         timestamp: new Date().toISOString()
       }),
       {
