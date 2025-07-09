@@ -1,6 +1,16 @@
 // supabase/functions/generate-monster-image/index.ts
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
-import { corsHeaders } from "../_shared/cors.ts"
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+}
+
+// Vertex AI configuration
+const VERTEX_AI_PROJECT_ID = Deno.env.get('VERTEX_AI_PROJECT_ID') || 'fibersingles-app2';
+const VERTEX_AI_LOCATION = Deno.env.get('VERTEX_AI_LOCATION') || 'us-central1';
+const VERTEX_AI_MODEL = 'imagegeneration@006'; // Imagen 2 model
 
 interface MonsterProfile {
   symptoms?: string[];
@@ -13,56 +23,183 @@ interface GenerateImageRequest {
   userId: string;
 }
 
-// Generate a creative prompt based on the monster profile
-function generatePrompt(profile: MonsterProfile): string {
-  const symptoms = profile.symptoms?.slice(0, 3) || [];
-  const coping = profile.coping?.slice(0, 3) || [];
-  const personality = profile.personality?.slice(0, 3) || [];
+// Helper function to convert PEM to DER format
+function pemToDer(pem: string): ArrayBuffer {
+  const pemHeader = "-----BEGIN PRIVATE KEY-----";
+  const pemFooter = "-----END PRIVATE KEY-----";
+  const pemContents = pem.substring(
+    pem.indexOf(pemHeader) + pemHeader.length,
+    pem.indexOf(pemFooter)
+  ).trim();
+  
+  const binaryString = atob(pemContents);
+  const bytes = new Uint8Array(binaryString.length);
+  
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  
+  return bytes.buffer;
+}
 
-  let prompt = "A friendly, whimsical monster character in a vibrant fantasy art style. ";
+// Helper function for base64url encoding
+function base64UrlEncode(data: string | Uint8Array): string {
+  let base64: string;
+  
+  if (typeof data === 'string') {
+    base64 = btoa(data);
+  } else {
+    const binaryString = Array.from(data, byte => String.fromCharCode(byte)).join('');
+    base64 = btoa(binaryString);
+  }
+  
+  return base64
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+// Helper function to get access token for Vertex AI
+async function getAccessToken(): Promise<string> {
+  try {
+    // Use the service account credentials from environment variable
+    const serviceAccountKey = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY')!);
+    
+    // Create JWT for Google OAuth2
+    const header = {
+      alg: 'RS256',
+      typ: 'JWT',
+      kid: serviceAccountKey.private_key_id
+    };
+
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: serviceAccountKey.client_email,
+      sub: serviceAccountKey.client_email,
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now,
+      exp: now + 3600,
+      scope: 'https://www.googleapis.com/auth/cloud-platform'
+    };
+
+    // Encode header and payload
+    const encodedHeader = base64UrlEncode(JSON.stringify(header));
+    const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+    const signatureInput = `${encodedHeader}.${encodedPayload}`;
+
+    // Import the private key
+    const key = await crypto.subtle.importKey(
+      'pkcs8',
+      pemToDer(serviceAccountKey.private_key),
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    // Sign the JWT
+    const encoder = new TextEncoder();
+    const data = encoder.encode(signatureInput);
+    const signature = await crypto.subtle.sign(
+      'RSASSA-PKCS1-v1_5',
+      key,
+      data
+    );
+
+    const jwt = `${signatureInput}.${base64UrlEncode(new Uint8Array(signature))}`;
+
+    // Exchange JWT for access token
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('Token exchange failed:', errorText);
+      throw new Error(`Failed to get access token: ${errorText}`);
+    }
+
+    const tokenData = await tokenResponse.json();
+    return tokenData.access_token;
+  } catch (error) {
+    console.error('Error getting access token:', error);
+    throw error;
+  }
+}
+
+// Generate creative prompt from monster profile
+function generatePrompt(profile: MonsterProfile): string {
+  let prompt = "Create a cute, friendly monster character that embodies: ";
+  
+  const attributes = [];
+  
+  // Add symptoms as monster features
+  if (profile.symptoms && profile.symptoms.length > 0) {
+    const symptomFeatures = profile.symptoms.slice(0, 3).map(symptom => {
+      const mappings: Record<string, string> = {
+        'fatigue': 'sleepy eyes and cozy appearance',
+        'pain': 'soft, cushiony body with gentle features',
+        'anxiety': 'alert, wide eyes with a comforting smile',
+        'brain_fog': 'fluffy, cloud-like texture',
+        'insomnia': 'night-themed with stars or moon patterns',
+        'digestive_issues': 'round, balloon-like shape',
+        'headaches': 'wearing a cute protective helmet or headband',
+        'sensitivity': 'delicate, translucent features with soft colors',
+        'dizziness': 'swirly patterns and playful wobbliness'
+      };
+      return mappings[symptom] || `features representing ${symptom}`;
+    });
+    attributes.push(...symptomFeatures);
+  }
+  
+  // Add coping strategies as positive traits
+  if (profile.coping && profile.coping.length > 0) {
+    const copingTraits = profile.coping.slice(0, 3).map(strategy => {
+      const mappings: Record<string, string> = {
+        'rest': 'peaceful, zen-like demeanor',
+        'gentle_exercise': 'dynamic pose with energy trails',
+        'meditation': 'glowing aura of calmness',
+        'hydration': 'water-themed elements like droplets or waves',
+        'support_groups': 'multiple small companion creatures',
+        'pacing': 'balanced, steady stance',
+        'medication': 'healing crystals or magical elements',
+        'therapy': 'wise, understanding expression',
+        'diet_changes': 'holding healthy fruits or vegetables'
+      };
+      return mappings[strategy] || `showing ${strategy}`;
+    });
+    attributes.push(...copingTraits);
+  }
   
   // Add personality traits
-  if (personality.length > 0) {
-    prompt += `The monster has a ${personality.join(', ')} personality. `;
-  }
-
-  // Transform symptoms into visual characteristics
-  const visualTraits = symptoms.map(symptom => {
-    const traitMap: Record<string, string> = {
-      'fatigue': 'sleepy eyes with star-shaped pupils',
-      'pain': 'glowing patches of healing light',
-      'brain fog': 'a misty cloud crown',
-      'sensitivity': 'iridescent, color-changing skin',
-      'digestive': 'a belly that glows like a lava lamp',
-      'mobility': 'floating or wings for easy movement',
-      'mood': 'emotion-colored aura that shifts',
-      'sleep': 'moon and star patterns on its body',
-    };
-    return traitMap[symptom.toLowerCase()] || `unique ${symptom}-inspired features`;
-  });
-
-  if (visualTraits.length > 0) {
-    prompt += `It has ${visualTraits.join(', ')}. `;
-  }
-
-  // Add coping mechanisms as accessories or powers
-  if (coping.length > 0) {
-    const copingVisuals = coping.map(strategy => {
-      const copingMap: Record<string, string> = {
-        'meditation': 'surrounded by peaceful floating orbs',
-        'exercise': 'athletic gear or energy ribbons',
-        'creative': 'holding art supplies or musical notes',
-        'nature': 'covered in flowers and leaves',
-        'support': 'heart-shaped accessories',
-        'routine': 'wearing a magical time-keeping device',
+  if (profile.personality && profile.personality.length > 0) {
+    const personalityTraits = profile.personality.slice(0, 3).map(trait => {
+      const mappings: Record<string, string> = {
+        'optimistic': 'bright, cheerful colors with upward-facing features',
+        'resilient': 'strong, protective armor or shell',
+        'empathetic': 'large, warm heart visible on chest',
+        'creative': 'artistic tools or paintbrush tail',
+        'determined': 'confident stance with cape or banner',
+        'humorous': 'silly expressions and playful accessories',
+        'introverted': 'cozy, wrapped in a blanket or shell',
+        'analytical': 'wearing glasses with thoughtful expression',
+        'compassionate': 'gentle hands reaching out to help'
       };
-      return copingMap[strategy.toLowerCase()] || `${strategy}-themed accessories`;
+      return mappings[trait] || `expressing ${trait}`;
     });
-    prompt += `The monster has ${copingVisuals.join(', ')}. `;
+    attributes.push(...personalityTraits);
   }
-
+  
+  prompt += attributes.join(", ");
+  
   // Add style guidelines
-  prompt += "Cute and approachable design, soft colors with vibrant accents, ";
+  prompt += ". Cute and approachable design, soft pastel colors with vibrant accents, ";
   prompt += "in the style of a children's book illustration mixed with modern digital art. ";
   prompt += "Full body view, white background, highly detailed, magical and uplifting.";
 
@@ -76,9 +213,8 @@ serve(async (req) => {
   }
 
   try {
-    console.log('Monster image generation request received');
-    
     const { profile, userId }: GenerateImageRequest = await req.json();
+    console.log('Received request for user:', userId);
 
     if (!profile || !userId) {
       throw new Error('Missing required fields: profile and userId');
@@ -94,48 +230,101 @@ serve(async (req) => {
       throw new Error('At least one keyword must be selected');
     }
 
+    // Initialize Supabase client
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Get access token for Vertex AI
+    console.log('Getting access token for Vertex AI...');
+    const accessToken = await getAccessToken();
+
     // Generate creative prompt from profile
     const prompt = generatePrompt(profile);
     console.log('Generated prompt:', prompt);
 
-    // For now, let's use a placeholder service that works
-    // This will test the full flow without Vertex AI complexity
-    console.log('Using placeholder image generation for now...');
+    // Prepare request for Vertex AI
+    const vertexAIEndpoint = `https://${VERTEX_AI_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_AI_PROJECT_ID}/locations/${VERTEX_AI_LOCATION}/publishers/google/models/${VERTEX_AI_MODEL}:predict`;
+
+    const requestBody = {
+      instances: [
+        {
+          prompt: prompt
+        }
+      ],
+      parameters: {
+        sampleCount: 1,
+        aspectRatio: "1:1", // Square images for profile pictures
+        safetyFilterLevel: "block_some",
+        personGeneration: "dont_allow", // Avoid generating human faces
+        addWatermark: false,
+        seed: Math.floor(Math.random() * 100000), // Random seed for variety
+      }
+    };
+
+    // Call Vertex AI
+    console.log('Calling Vertex AI...');
+    const response = await fetch(vertexAIEndpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Vertex AI error:', errorText);
+      throw new Error(`Vertex AI request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    console.log('Vertex AI response received');
+
+    // Extract the generated image
+    if (!result.predictions || result.predictions.length === 0) {
+      throw new Error('No image generated');
+    }
+
+    const imageBase64 = result.predictions[0].bytesBase64Encoded;
+    if (!imageBase64) {
+      throw new Error('No image data in response');
+    }
+
+    // Convert base64 to blob
+    const imageData = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0));
+    const imageBlob = new Blob([imageData], { type: 'image/png' });
+
+    // Upload image to Supabase Storage
+    const fileName = `${userId}/monster-${Date.now()}.png`;
+    console.log('Uploading image to storage:', fileName);
     
-    // Create a colorful SVG based on the keywords
-    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8'];
-    const randomColor = colors[Math.floor(Math.random() * colors.length)];
-    
-    const svgContent = `
-      <svg width="300" height="300" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <radialGradient id="grad1" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" style="stop-color:${randomColor};stop-opacity:1" />
-            <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0.3" />
-          </radialGradient>
-        </defs>
-        <rect width="100%" height="100%" fill="#f8f9fa"/>
-        <circle cx="150" cy="120" r="60" fill="url(#grad1)" stroke="#333" stroke-width="3"/>
-        <circle cx="130" cy="105" r="8" fill="#000"/>
-        <circle cx="170" cy="105" r="8" fill="#000"/>
-        <ellipse cx="150" cy="130" rx="12" ry="8" fill="#333"/>
-        <path d="M 130 150 Q 150 170 170 150" stroke="#333" stroke-width="3" fill="none"/>
-        <text x="150" y="220" font-family="Arial, sans-serif" font-size="14" fill="#666" text-anchor="middle">Your Monster Friend</text>
-        <text x="150" y="240" font-family="Arial, sans-serif" font-size="12" fill="#999" text-anchor="middle">${[...(profile.symptoms || []), ...(profile.coping || []), ...(profile.personality || [])].slice(0, 3).join(', ')}</text>
-      </svg>
-    `;
+    const { error: uploadError } = await supabase.storage
+      .from('monster-images')
+      .upload(fileName, imageBlob, {
+        contentType: 'image/png',
+        upsert: false
+      });
 
-    const base64Svg = btoa(svgContent);
-    const imageUrl = `data:image/svg+xml;base64,${base64Svg}`;
+    if (uploadError) {
+      console.error('Upload error:', uploadError);
+      throw new Error(`Failed to upload image: ${uploadError.message}`);
+    }
 
-    console.log('Placeholder monster image generated successfully');
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('monster-images')
+      .getPublicUrl(fileName);
 
+    console.log('Image uploaded successfully:', publicUrl);
+
+    // Return success response
     return new Response(
       JSON.stringify({
         success: true,
-        imageUrl: imageUrl,
-        prompt: prompt,
-        note: "This is a placeholder image. Vertex AI integration coming next!"
+        imageUrl: publicUrl,
+        prompt: prompt
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -144,8 +333,7 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Error generating monster image:', error);
-    
+    console.error('Error in generate-monster-image function:', error);
     return new Response(
       JSON.stringify({
         success: false,
@@ -158,5 +346,3 @@ serve(async (req) => {
     );
   }
 });
-
-export type { MonsterProfile, GenerateImageRequest };
