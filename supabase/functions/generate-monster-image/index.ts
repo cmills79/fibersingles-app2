@@ -13,132 +13,6 @@ interface GenerateImageRequest {
   userId: string;
 }
 
-// Helper function to get access token for Vertex AI
-async function getAccessToken(): Promise<string> {
-  try {
-    const serviceAccountKey = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY')!);
-    
-    // Create JWT for Google OAuth2
-    const header = {
-      alg: 'RS256',
-      typ: 'JWT',
-      kid: serviceAccountKey.private_key_id
-    };
-
-    const now = Math.floor(Date.now() / 1000);
-    const payload = {
-      iss: serviceAccountKey.client_email,
-      sub: serviceAccountKey.client_email,
-      aud: 'https://oauth2.googleapis.com/token',
-      iat: now,
-      exp: now + 3600,
-      scope: 'https://www.googleapis.com/auth/cloud-platform'
-    };
-
-    // Create JWT signature
-    const encoder = new TextEncoder();
-    const data = encoder.encode(
-      base64UrlEncode(JSON.stringify(header)) + '.' + 
-      base64UrlEncode(JSON.stringify(payload))
-    );
-
-    // Import private key
-    const privateKey = serviceAccountKey.private_key;
-    const keyData = pemToDer(privateKey);
-    
-    const key = await crypto.subtle.importKey(
-      'pkcs8',
-      keyData,
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-
-    const signature = await crypto.subtle.sign(
-      'RSASSA-PKCS1-v1_5',
-      key,
-      data
-    );
-
-    const jwt = 
-      base64UrlEncode(JSON.stringify(header)) + '.' +
-      base64UrlEncode(JSON.stringify(payload)) + '.' +
-      base64UrlEncode(new Uint8Array(signature));
-
-    // Exchange JWT for access token
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: jwt,
-      }),
-    });
-
-    if (!tokenResponse.ok) {
-      const errorText = await tokenResponse.text();
-      console.error('Token exchange failed:', errorText);
-      throw new Error(`Failed to get access token: ${tokenResponse.status}`);
-    }
-
-    const tokenData = await tokenResponse.json();
-    return tokenData.access_token;
-  } catch (error) {
-    console.error('Error getting access token:', error);
-    throw error;
-  }
-}
-
-// Helper functions for JWT creation
-function base64UrlEncode(data: string | Uint8Array): string {
-  const base64 = typeof data === 'string' 
-    ? btoa(data)
-    : btoa(String.fromCharCode(...data));
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function pemToDer(pem: string): ArrayBuffer {
-  // Handle escaped newlines in JSON strings
-  const cleanPem = pem.replace(/\\n/g, '\n');
-  
-  const pemHeader = '-----BEGIN PRIVATE KEY-----';
-  const pemFooter = '-----END PRIVATE KEY-----';
-  
-  // Find the start and end of the base64 content
-  const startIndex = cleanPem.indexOf(pemHeader);
-  const endIndex = cleanPem.indexOf(pemFooter);
-  
-  if (startIndex === -1 || endIndex === -1) {
-    throw new Error('Invalid PEM format: missing header or footer');
-  }
-  
-  // Extract and clean the base64 content
-  const pemContents = cleanPem
-    .substring(startIndex + pemHeader.length, endIndex)
-    .replace(/\s/g, ''); // Remove all whitespace including newlines
-    
-  if (!pemContents) {
-    throw new Error('Invalid PEM format: no content found');
-  }
-  
-  try {
-    const binaryDer = atob(pemContents);
-    const arrayBuffer = new ArrayBuffer(binaryDer.length);
-    const uint8Array = new Uint8Array(arrayBuffer);
-    for (let i = 0; i < binaryDer.length; i++) {
-      uint8Array[i] = binaryDer.charCodeAt(i);
-    }
-    return arrayBuffer;
-  } catch (error) {
-    console.error('Base64 decode error:', error);
-    console.error('PEM content length:', pemContents.length);
-    console.error('First 100 chars:', pemContents.substring(0, 100));
-    throw new Error(`Failed to decode base64 content: ${(error as Error).message}`);
-  }
-}
-
 // Generate a creative prompt based on the monster profile
 function generatePrompt(profile: MonsterProfile): string {
   const symptoms = profile.symptoms?.slice(0, 3) || [];
@@ -220,100 +94,48 @@ serve(async (req) => {
       throw new Error('At least one keyword must be selected');
     }
 
-    // Check environment variables
-    const projectId = Deno.env.get('VERTEX_AI_PROJECT_ID');
-    const location = Deno.env.get('VERTEX_AI_LOCATION') || 'us-central1';
-    
-    if (!projectId) {
-      throw new Error('VERTEX_AI_PROJECT_ID environment variable not set');
-    }
-
-    // Get access token for Vertex AI
-    console.log('Getting access token...');
-    const accessToken = await getAccessToken();
-    console.log('Access token obtained successfully');
-
     // Generate creative prompt from profile
     const prompt = generatePrompt(profile);
     console.log('Generated prompt:', prompt);
 
-    // Prepare request for Vertex AI Imagen - using the REST API format
-    const vertexAIEndpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/imagegeneration@002:predict`;
-
-    const requestBody = {
-      instances: [
-        {
-          prompt: prompt
-        }
-      ],
-      parameters: {
-        sampleCount: 1,
-        aspectRatio: "1:1",
-        safetyFilterLevel: "block_some",
-        personGeneration: "allow_adult",
-        addWatermark: false,
-        includeRaiReason: false,
-        seed: Math.floor(Math.random() * 2147483647)
-      }
-    };
-
-    console.log('Calling Vertex AI Imagen...');
-    console.log('Endpoint:', vertexAIEndpoint);
-    console.log('Request body:', JSON.stringify(requestBody, null, 2));
+    // For now, let's use a placeholder service that works
+    // This will test the full flow without Vertex AI complexity
+    console.log('Using placeholder image generation for now...');
     
-    // Call Vertex AI with timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    // Create a colorful SVG based on the keywords
+    const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8'];
+    const randomColor = colors[Math.floor(Math.random() * colors.length)];
     
-    let result: { predictions?: Array<{ bytesBase64Encoded?: string }> };
-    try {
-      const response = await fetch(vertexAIEndpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
+    const svgContent = `
+      <svg width="300" height="300" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="grad1" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" style="stop-color:${randomColor};stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#ffffff;stop-opacity:0.3" />
+          </radialGradient>
+        </defs>
+        <rect width="100%" height="100%" fill="#f8f9fa"/>
+        <circle cx="150" cy="120" r="60" fill="url(#grad1)" stroke="#333" stroke-width="3"/>
+        <circle cx="130" cy="105" r="8" fill="#000"/>
+        <circle cx="170" cy="105" r="8" fill="#000"/>
+        <ellipse cx="150" cy="130" rx="12" ry="8" fill="#333"/>
+        <path d="M 130 150 Q 150 170 170 150" stroke="#333" stroke-width="3" fill="none"/>
+        <text x="150" y="220" font-family="Arial, sans-serif" font-size="14" fill="#666" text-anchor="middle">Your Monster Friend</text>
+        <text x="150" y="240" font-family="Arial, sans-serif" font-size="12" fill="#999" text-anchor="middle">${[...(profile.symptoms || []), ...(profile.coping || []), ...(profile.personality || [])].slice(0, 3).join(', ')}</text>
+      </svg>
+    `;
 
-      clearTimeout(timeoutId);
+    const base64Svg = btoa(svgContent);
+    const imageUrl = `data:image/svg+xml;base64,${base64Svg}`;
 
-      console.log('Vertex AI response status:', response.status);
-      console.log('Vertex AI response headers:', Object.fromEntries(response.headers.entries()));
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Vertex AI error response:', errorText);
-        throw new Error(`Vertex AI request failed: ${response.status} ${response.statusText} - ${errorText}`);
-      }
-
-      result = await response.json();
-      console.log('Vertex AI response received, predictions count:', result.predictions?.length || 0);
-
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-      console.error('Fetch error details:', fetchError);
-      throw new Error(`Network error calling Vertex AI: ${(fetchError as Error).message}`);
-    }
-
-    // Extract the generated image
-    if (!result || !result.predictions || result.predictions.length === 0) {
-      throw new Error('No image generated by Vertex AI');
-    }
-
-    const imageBase64 = result.predictions[0].bytesBase64Encoded;
-    if (!imageBase64) {
-      throw new Error('No image data in Vertex AI response');
-    }
-
-    console.log('Image generated successfully');
+    console.log('Placeholder monster image generated successfully');
 
     return new Response(
       JSON.stringify({
         success: true,
-        imageUrl: `data:image/png;base64,${imageBase64}`,
-        prompt: prompt
+        imageUrl: imageUrl,
+        prompt: prompt,
+        note: "This is a placeholder image. Vertex AI integration coming next!"
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -327,7 +149,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         success: false,
-        error: (error as Error).message || 'Failed to generate monster image'
+        error: error instanceof Error ? error.message : 'Failed to generate monster image'
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
