@@ -100,19 +100,43 @@ function base64UrlEncode(data: string | Uint8Array): string {
 }
 
 function pemToDer(pem: string): ArrayBuffer {
+  // Handle escaped newlines in JSON strings
+  const cleanPem = pem.replace(/\\n/g, '\n');
+  
   const pemHeader = '-----BEGIN PRIVATE KEY-----';
   const pemFooter = '-----END PRIVATE KEY-----';
-  const pemContents = pem.substring(
-    pemHeader.length,
-    pem.length - pemFooter.length
-  ).replace(/\s/g, '');
-  const binaryDer = atob(pemContents);
-  const arrayBuffer = new ArrayBuffer(binaryDer.length);
-  const uint8Array = new Uint8Array(arrayBuffer);
-  for (let i = 0; i < binaryDer.length; i++) {
-    uint8Array[i] = binaryDer.charCodeAt(i);
+  
+  // Find the start and end of the base64 content
+  const startIndex = cleanPem.indexOf(pemHeader);
+  const endIndex = cleanPem.indexOf(pemFooter);
+  
+  if (startIndex === -1 || endIndex === -1) {
+    throw new Error('Invalid PEM format: missing header or footer');
   }
-  return arrayBuffer;
+  
+  // Extract and clean the base64 content
+  const pemContents = cleanPem
+    .substring(startIndex + pemHeader.length, endIndex)
+    .replace(/\s/g, ''); // Remove all whitespace including newlines
+    
+  if (!pemContents) {
+    throw new Error('Invalid PEM format: no content found');
+  }
+  
+  try {
+    const binaryDer = atob(pemContents);
+    const arrayBuffer = new ArrayBuffer(binaryDer.length);
+    const uint8Array = new Uint8Array(arrayBuffer);
+    for (let i = 0; i < binaryDer.length; i++) {
+      uint8Array[i] = binaryDer.charCodeAt(i);
+    }
+    return arrayBuffer;
+  } catch (error) {
+    console.error('Base64 decode error:', error);
+    console.error('PEM content length:', pemContents.length);
+    console.error('First 100 chars:', pemContents.substring(0, 100));
+    throw new Error(`Failed to decode base64 content: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }
 
 // Generate a creative prompt based on the monster profile
