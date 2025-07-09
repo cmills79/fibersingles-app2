@@ -2,165 +2,15 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { corsHeaders } from "../_shared/cors.ts"
 
-// Vertex AI configuration
-const VERTEX_AI_PROJECT_ID = Deno.env.get('VERTEX_AI_PROJECT_ID');
-const VERTEX_AI_LOCATION = Deno.env.get('VERTEX_AI_LOCATION');
-const VERTEX_AI_MODEL = 'imagegeneration@006'; // Imagen 2 model
-
-// Validate environment variables
-if (!VERTEX_AI_PROJECT_ID || !VERTEX_AI_LOCATION) {
-  console.error('Missing required environment variables');
-  throw new Error('Missing required environment variables: VERTEX_AI_PROJECT_ID or VERTEX_AI_LOCATION');
-}
-
-// Configure logging
-const log = {
-  info: (message: string, ...args: unknown[]) => console.log(`[INFO] ${message}`, ...args),
-  error: (message: string, ...args: unknown[]) => console.error(`[ERROR] ${message}`, ...args),
-  debug: (message: string, ...args: unknown[]) => console.log(`[DEBUG] ${message}`, ...args)
-};
-
-// Valid symptom types
-const VALID_SYMPTOMS = [
-  'fatigue',
-  'pain',
-  'brain fog',
-  'sensitivity',
-  'digestive',
-  'mobility',
-  'mood',
-  'sleep'
-] as const;
-
-// Valid coping strategies
-const VALID_COPING = [
-  'meditation',
-  'exercise',
-  'creative',
-  'nature',
-  'support',
-  'routine'
-] as const;
-
-type Symptom = typeof VALID_SYMPTOMS[number];
-type CopingStrategy = typeof VALID_COPING[number];
-
 interface MonsterProfile {
-  symptoms?: Symptom[];
-  coping?: CopingStrategy[];
+  symptoms?: string[];
+  coping?: string[];
   personality?: string[];
-}
-
-// Validation function for MonsterProfile
-function _validateMonsterProfile(profile: MonsterProfile): boolean {
-  return (
-    (!profile.symptoms || (profile.symptoms.length > 0 && profile.symptoms.length <= 5)) &&
-    (!profile.coping || (profile.coping.length > 0 && profile.coping.length <= 5)) &&
-    (!profile.personality || (profile.personality.length > 0 && profile.personality.length <= 5))
-  );
 }
 
 interface GenerateImageRequest {
   profile: MonsterProfile;
   userId: string;
-}
-
-// Helper function to get access token for Vertex AI
-async function getAccessToken(): Promise<string> {
-  try {
-    // Use the service account credentials from environment variable
-    const serviceAccountKey = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY')!);
-    
-    // Create JWT for Google OAuth2
-    const header = {
-      alg: 'RS256',
-      typ: 'JWT',
-      kid: serviceAccountKey.private_key_id
-    };
-
-    const now = Math.floor(Date.now() / 1000);
-    const payload = {
-      iss: serviceAccountKey.client_email,
-      sub: serviceAccountKey.client_email,
-      aud: 'https://oauth2.googleapis.com/token',
-      iat: now,
-      exp: now + 3600,
-      scope: 'https://www.googleapis.com/auth/cloud-platform'
-    };
-
-    // Import crypto for JWT signing
-    const encoder = new TextEncoder();
-    const data = encoder.encode(
-      base64UrlEncode(JSON.stringify(header)) + '.' + 
-      base64UrlEncode(JSON.stringify(payload))
-    );
-
-    // Sign the JWT
-    const key = await crypto.subtle.importKey(
-      'pkcs8',
-      pemToDer(serviceAccountKey.private_key),
-      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
-      false,
-      ['sign']
-    );
-
-    const signature = await crypto.subtle.sign(
-      'RSASSA-PKCS1-v1_5',
-      key,
-      data
-    );
-
-    const jwt = 
-      base64UrlEncode(JSON.stringify(header)) + '.' +
-      base64UrlEncode(JSON.stringify(payload)) + '.' +
-      base64UrlEncode(new Uint8Array(signature));
-
-    // Exchange JWT for access token
-    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-        assertion: jwt,
-      }),
-    });
-
-    if (!tokenResponse.ok) {
-      throw new Error(`Failed to get access token: ${await tokenResponse.text()}`);
-    }
-
-    const tokenData = await tokenResponse.json();
-    return tokenData.access_token;
-  } catch (error) {
-    console.error('Error getting access token:', error);
-    throw error;
-  }
-}
-
-// Helper functions for JWT creation
-function base64UrlEncode(data: string | Uint8Array): string {
-  const base64 = typeof data === 'string' 
-    ? btoa(data)
-    : btoa(String.fromCharCode(...data));
-  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-}
-
-function pemToDer(pem: string): ArrayBuffer {
-  const pemHeader = '-----BEGIN PRIVATE KEY-----';
-  const pemFooter = '-----END PRIVATE KEY-----';
-  const pemContents = pem.substring(
-    pemHeader.length,
-    pem.length - pemFooter.length - 1
-  ).replace(/\s/g, '');
-  const binaryDer = atob(pemContents);
-  const arrayBuffer = new ArrayBuffer(binaryDer.length);
-  const uint8Array = new Uint8Array(arrayBuffer);
-  for (let i = 0; i < binaryDer.length; i++) {
-    uint8Array[i] = binaryDer.charCodeAt(i);
-  }
-  return arrayBuffer;
 }
 
 // Generate a creative prompt based on the monster profile
@@ -189,7 +39,6 @@ function generatePrompt(profile: MonsterProfile): string {
       'mobility': 'floating or wings for easy movement',
       'mood': 'emotion-colored aura that shifts',
       'sleep': 'moon and star patterns on its body',
-      // Add more mappings as needed
     };
     return traitMap[symptom.toLowerCase()] || `unique ${symptom}-inspired features`;
   });
@@ -208,7 +57,6 @@ function generatePrompt(profile: MonsterProfile): string {
         'nature': 'covered in flowers and leaves',
         'support': 'heart-shaped accessories',
         'routine': 'wearing a magical time-keeping device',
-        // Add more mappings
       };
       return copingMap[strategy.toLowerCase()] || `${strategy}-themed accessories`;
     });
@@ -223,31 +71,26 @@ function generatePrompt(profile: MonsterProfile): string {
   return prompt;
 }
 
-serve(async (req: Request) => {
+serve(async (req) => {
   // Handle CORS
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    // Log incoming request
-    log.debug('Incoming request:', {
-      method: req.method,
-      headers: Object.fromEntries(req.headers.entries())
-    });
+    console.log('Monster image generation request received');
     
     // Parse request body
-    const rawBody = await req.text();
-    log.debug('Raw request body:', rawBody);
-    
-    let requestData: GenerateImageRequest;
+    let requestBody;
     try {
-      requestData = JSON.parse(rawBody);
-    } catch (e) {
-      throw new Error(`Invalid JSON in request body: ${e instanceof Error ? e.message : String(e)}`);
+      requestBody = await req.json();
+      console.log('Request body parsed:', JSON.stringify(requestBody));
+    } catch (error) {
+      console.error('Error parsing request body:', error);
+      throw new Error('Invalid JSON in request body');
     }
-    
-    const { profile, userId } = requestData;
+
+    const { profile, userId }: GenerateImageRequest = requestBody;
 
     if (!profile || !userId) {
       throw new Error('Missing required fields: profile and userId');
@@ -263,86 +106,57 @@ serve(async (req: Request) => {
       throw new Error('At least one keyword must be selected');
     }
 
-    // Get access token for Vertex AI
-    const accessToken = await getAccessToken();
+    console.log('Profile validation passed');
+
+    // Check environment variables
+    const projectId = Deno.env.get('VERTEX_AI_PROJECT_ID');
+    const location = Deno.env.get('VERTEX_AI_LOCATION');
+    const serviceAccountKey = Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY');
+    
+    console.log('Environment check:', {
+      hasProjectId: !!projectId,
+      hasLocation: !!location,
+      hasServiceAccountKey: !!serviceAccountKey,
+      projectId: projectId || 'not set',
+      location: location || 'not set'
+    });
+
+    if (!projectId || !location || !serviceAccountKey) {
+      throw new Error('Missing required environment variables');
+    }
+
+    // Test JSON parsing of service account key
+    let serviceAccountData;
+    try {
+      serviceAccountData = JSON.parse(serviceAccountKey);
+      console.log('Service account key parsed successfully:', {
+        hasPrivateKey: !!serviceAccountData.private_key,
+        hasClientEmail: !!serviceAccountData.client_email,
+        projectId: serviceAccountData.project_id
+      });
+    } catch (error) {
+      console.error('Error parsing service account key:', error);
+      throw new Error('Invalid service account key JSON');
+    }
 
     // Generate creative prompt from profile
     const prompt = generatePrompt(profile);
     console.log('Generated prompt:', prompt);
 
-    // Prepare request for Vertex AI
-    const vertexAIEndpoint = `https://${VERTEX_AI_LOCATION}-aiplatform.googleapis.com/v1/projects/${VERTEX_AI_PROJECT_ID}/locations/${VERTEX_AI_LOCATION}/publishers/google/models/${VERTEX_AI_MODEL}:predict`;
-
-    const requestBody = {
-      instances: [
-        {
-          prompt: prompt
-        }
-      ],
-      parameters: {
-        sampleCount: 1,
-        aspectRatio: "1:1", // Square images for profile pictures
-        safetyFilterLevel: "block_some",
-        personGeneration: "dont_allow", // Avoid generating human faces
-        addWatermark: false,
-        seed: Math.floor(Math.random() * 100000), // Random seed for variety
-      }
-    };
-
-    // Call Vertex AI
-    log.debug('Calling Vertex AI:', {
-      endpoint: vertexAIEndpoint,
-      requestBody: {
-        ...requestBody,
-        accessToken: '***' // Hide sensitive data in logs
-      }
-    });
-
-    const response = await fetch(vertexAIEndpoint, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      log.error('Vertex AI error:', {
-        status: response.status,
-        statusText: response.statusText,
-        errorText
-      });
-      throw new Error(`Vertex AI request failed: ${response.status} ${response.statusText} - ${errorText}`);
-    }
-
-    const result = await response.json();
-
-    // Extract the generated image
-    if (!result.predictions || result.predictions.length === 0) {
-      throw new Error('No image generated');
-    }
-
-    const imageBase64 = result.predictions[0].bytesBase64Encoded;
-    if (!imageBase64) {
-      throw new Error('No image data in response');
-    }
-
-    // Convert base64 to blob
-    const imageData = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0));
-    const _imageBlob = new Blob([imageData], { type: 'image/png' });
-
-    // Here you would typically:
-    // 1. Upload the image to Supabase Storage
-    // 2. Save the URL to the user's profile
-    // For now, we'll return the base64 image
-
+    // For now, return a mock response while we debug
+    // TODO: Implement actual Vertex AI call once debugging is complete
+    console.log('Returning mock response for debugging');
+    
     return new Response(
       JSON.stringify({
         success: true,
-        imageUrl: `data:image/png;base64,${imageBase64}`,
-        prompt: prompt // For debugging
+        imageUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4gIDxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbGw9IiNmMGYwZjAiLz4gIDx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTQiIGZpbGw9IiM2NjY2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5Nb25zdGVyIFBsYWNlaG9sZGVyPC90ZXh0Pjwvc3ZnPg==',
+        prompt: prompt,
+        debug: {
+          environmentOk: true,
+          serviceAccountOk: true,
+          profileValid: true
+        }
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -351,18 +165,23 @@ serve(async (req: Request) => {
     );
 
   } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    log.error('Error in monster generation:', {
-      error: err.message,
-      stack: err.stack,
-      type: err.constructor.name
-    });
+    console.error('Error in monster image generation:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Failed to generate monster image';
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
+    
+    if (errorStack) {
+      console.error('Error stack:', errorStack);
+    }
+    
     return new Response(
       JSON.stringify({
         success: false,
-        error: err.message || 'Failed to generate monster image',
-        errorType: err.constructor.name,
-        timestamp: new Date().toISOString()
+        error: errorMessage,
+        debug: {
+          errorType: errorType,
+          timestamp: new Date().toISOString()
+        }
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
