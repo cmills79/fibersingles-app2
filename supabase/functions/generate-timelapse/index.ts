@@ -1,14 +1,10 @@
 // supabase/functions/generate-timelapse/index.ts
 
-import { serve } from "https://deno.land/std@0.203.0/http/server.ts"
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.7.1'
+import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import { corsHeaders } from "../_shared/cors.ts"
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
-serve(async (req) => {
+serve(async (req: Request) => {
   console.log('Time-lapse generation function started')
   
   if (req.method === 'OPTIONS') {
@@ -171,7 +167,7 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({ 
         error: 'Time-lapse generation failed', 
-        details: error.message 
+        details: error instanceof Error ? error.message : String(error) 
       }),
       {
         status: 500,
