@@ -1,0 +1,13 @@
+{
+  "name": "vertex-ai-proxy",
+  "version": "1.0.0",
+  "description": "A proxy for Vertex AI to be used with Supabase.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@google-cloud/aiplatform": "3.2.0",
+    "express": "^4.21.2"
+  }
+}
