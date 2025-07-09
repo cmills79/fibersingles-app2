@@ -13,13 +13,114 @@ interface GenerateImageRequest {
   userId: string;
 }
 
+// Helper function to get access token for Vertex AI
+async function getAccessToken(): Promise<string> {
+  try {
+    const serviceAccountKey = JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY')!);
+    
+    // Create JWT for Google OAuth2
+    const header = {
+      alg: 'RS256',
+      typ: 'JWT',
+      kid: serviceAccountKey.private_key_id
+    };
+
+    const now = Math.floor(Date.now() / 1000);
+    const payload = {
+      iss: serviceAccountKey.client_email,
+      sub: serviceAccountKey.client_email,
+      aud: 'https://oauth2.googleapis.com/token',
+      iat: now,
+      exp: now + 3600,
+      scope: 'https://www.googleapis.com/auth/cloud-platform'
+    };
+
+    // Create JWT signature
+    const encoder = new TextEncoder();
+    const data = encoder.encode(
+      base64UrlEncode(JSON.stringify(header)) + '.' + 
+      base64UrlEncode(JSON.stringify(payload))
+    );
+
+    // Import private key
+    const privateKey = serviceAccountKey.private_key;
+    const keyData = pemToDer(privateKey);
+    
+    const key = await crypto.subtle.importKey(
+      'pkcs8',
+      keyData,
+      { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+      false,
+      ['sign']
+    );
+
+    const signature = await crypto.subtle.sign(
+      'RSASSA-PKCS1-v1_5',
+      key,
+      data
+    );
+
+    const jwt = 
+      base64UrlEncode(JSON.stringify(header)) + '.' +
+      base64UrlEncode(JSON.stringify(payload)) + '.' +
+      base64UrlEncode(new Uint8Array(signature));
+
+    // Exchange JWT for access token
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('Token exchange failed:', errorText);
+      throw new Error(`Failed to get access token: ${tokenResponse.status}`);
+    }
+
+    const tokenData = await tokenResponse.json();
+    return tokenData.access_token;
+  } catch (error) {
+    console.error('Error getting access token:', error);
+    throw error;
+  }
+}
+
+// Helper functions for JWT creation
+function base64UrlEncode(data: string | Uint8Array): string {
+  const base64 = typeof data === 'string' 
+    ? btoa(data)
+    : btoa(String.fromCharCode(...data));
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function pemToDer(pem: string): ArrayBuffer {
+  const pemHeader = '-----BEGIN PRIVATE KEY-----';
+  const pemFooter = '-----END PRIVATE KEY-----';
+  const pemContents = pem.substring(
+    pemHeader.length,
+    pem.length - pemFooter.length
+  ).replace(/\s/g, '');
+  const binaryDer = atob(pemContents);
+  const arrayBuffer = new ArrayBuffer(binaryDer.length);
+  const uint8Array = new Uint8Array(arrayBuffer);
+  for (let i = 0; i < binaryDer.length; i++) {
+    uint8Array[i] = binaryDer.charCodeAt(i);
+  }
+  return arrayBuffer;
+}
+
 // Generate a creative prompt based on the monster profile
 function generatePrompt(profile: MonsterProfile): string {
   const symptoms = profile.symptoms?.slice(0, 3) || [];
   const coping = profile.coping?.slice(0, 3) || [];
   const personality = profile.personality?.slice(0, 3) || [];
 
-  // Create a whimsical, non-medical description
   let prompt = "A friendly, whimsical monster character in a vibrant fantasy art style. ";
   
   // Add personality traits
@@ -29,7 +130,6 @@ function generatePrompt(profile: MonsterProfile): string {
 
   // Transform symptoms into visual characteristics
   const visualTraits = symptoms.map(symptom => {
-    // Map symptoms to visual traits in a non-medical way
     const traitMap: Record<string, string> = {
       'fatigue': 'sleepy eyes with star-shaped pupils',
       'pain': 'glowing patches of healing light',
@@ -80,17 +180,7 @@ serve(async (req) => {
   try {
     console.log('Monster image generation request received');
     
-    // Parse request body
-    let requestBody;
-    try {
-      requestBody = await req.json();
-      console.log('Request body parsed:', JSON.stringify(requestBody));
-    } catch (error) {
-      console.error('Error parsing request body:', error);
-      throw new Error('Invalid JSON in request body');
-    }
-
-    const { profile, userId }: GenerateImageRequest = requestBody;
+    const { profile, userId }: GenerateImageRequest = await req.json();
 
     if (!profile || !userId) {
       throw new Error('Missing required fields: profile and userId');
@@ -106,57 +196,80 @@ serve(async (req) => {
       throw new Error('At least one keyword must be selected');
     }
 
-    console.log('Profile validation passed');
-
     // Check environment variables
     const projectId = Deno.env.get('VERTEX_AI_PROJECT_ID');
-    const location = Deno.env.get('VERTEX_AI_LOCATION');
-    const serviceAccountKey = Deno.env.get('GOOGLE_SERVICE_ACCOUNT_KEY');
+    const location = Deno.env.get('VERTEX_AI_LOCATION') || 'us-central1';
     
-    console.log('Environment check:', {
-      hasProjectId: !!projectId,
-      hasLocation: !!location,
-      hasServiceAccountKey: !!serviceAccountKey,
-      projectId: projectId || 'not set',
-      location: location || 'not set'
-    });
-
-    if (!projectId || !location || !serviceAccountKey) {
-      throw new Error('Missing required environment variables');
+    if (!projectId) {
+      throw new Error('VERTEX_AI_PROJECT_ID environment variable not set');
     }
 
-    // Test JSON parsing of service account key
-    let serviceAccountData;
-    try {
-      serviceAccountData = JSON.parse(serviceAccountKey);
-      console.log('Service account key parsed successfully:', {
-        hasPrivateKey: !!serviceAccountData.private_key,
-        hasClientEmail: !!serviceAccountData.client_email,
-        projectId: serviceAccountData.project_id
-      });
-    } catch (error) {
-      console.error('Error parsing service account key:', error);
-      throw new Error('Invalid service account key JSON');
-    }
+    // Get access token for Vertex AI
+    console.log('Getting access token...');
+    const accessToken = await getAccessToken();
+    console.log('Access token obtained successfully');
 
     // Generate creative prompt from profile
     const prompt = generatePrompt(profile);
     console.log('Generated prompt:', prompt);
 
-    // For now, return a mock response while we debug
-    // TODO: Implement actual Vertex AI call once debugging is complete
-    console.log('Returning mock response for debugging');
+    // Prepare request for Vertex AI Imagen
+    const vertexAIEndpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/imagegeneration@006:predict`;
+
+    const requestBody = {
+      instances: [
+        {
+          prompt: prompt
+        }
+      ],
+      parameters: {
+        sampleCount: 1,
+        aspectRatio: "1:1",
+        safetyFilterLevel: "block_some",
+        personGeneration: "dont_allow",
+        addWatermark: false,
+        seed: Math.floor(Math.random() * 100000),
+      }
+    };
+
+    console.log('Calling Vertex AI Imagen...');
     
+    // Call Vertex AI
+    const response = await fetch(vertexAIEndpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Vertex AI error:', errorText);
+      throw new Error(`Vertex AI request failed: ${response.status} ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    console.log('Vertex AI response received');
+
+    // Extract the generated image
+    if (!result.predictions || result.predictions.length === 0) {
+      throw new Error('No image generated by Vertex AI');
+    }
+
+    const imageBase64 = result.predictions[0].bytesBase64Encoded;
+    if (!imageBase64) {
+      throw new Error('No image data in Vertex AI response');
+    }
+
+    console.log('Image generated successfully');
+
     return new Response(
       JSON.stringify({
         success: true,
-        imageUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4gIDxyZWN0IHdpZHRoPSIxMDAlIiBoZWlnaHQ9IjEwMCUiIGZpbGw9IiNmMGYwZjAiLz4gIDx0ZXh0IHg9IjUwJSIgeT0iNTAlIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTQiIGZpbGw9IiM2NjY2NjYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5Nb25zdGVyIFBsYWNlaG9sZGVyPC90ZXh0Pjwvc3ZnPg==',
-        prompt: prompt,
-        debug: {
-          environmentOk: true,
-          serviceAccountOk: true,
-          profileValid: true
-        }
+        imageUrl: `data:image/png;base64,${imageBase64}`,
+        prompt: prompt
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -165,23 +278,12 @@ serve(async (req) => {
     );
 
   } catch (error) {
-    console.error('Error in monster image generation:', error);
-    const errorMessage = error instanceof Error ? error.message : 'Failed to generate monster image';
-    const errorStack = error instanceof Error ? error.stack : undefined;
-    const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
-    
-    if (errorStack) {
-      console.error('Error stack:', errorStack);
-    }
+    console.error('Error generating monster image:', error);
     
     return new Response(
       JSON.stringify({
         success: false,
-        error: errorMessage,
-        debug: {
-          errorType: errorType,
-          timestamp: new Date().toISOString()
-        }
+        error: error instanceof Error ? error.message : 'Failed to generate monster image'
       }),
       {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -191,5 +293,4 @@ serve(async (req) => {
   }
 });
 
-// Export type definitions for frontend use
 export type { MonsterProfile, GenerateImageRequest };
